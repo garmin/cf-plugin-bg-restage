@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"strconv"
 )
 
 type BgRestagePlugin struct{}
@@ -37,7 +38,7 @@ type Job struct {
 func venerableAppName(appName string) string {
 	return fmt.Sprintf("%s-venerable", appName)
 }
-func restageActions(appRepo *ApplicationRepo, appName string) []rewind.Action {
+func restageActions(appRepo *ApplicationRepo, appName string, instanceCount int, noDelete bool) []rewind.Action {
 	return []rewind.Action{
 		// create manifest
 		{
@@ -60,7 +61,7 @@ func restageActions(appRepo *ApplicationRepo, appName string) []rewind.Action {
 		// push
 		{
 			Forward: func() error {
-				appRepo.PushApplication(appName)
+				appRepo.PushApplication(appName, instanceCount)
 				return nil
 			},
 		},
@@ -131,7 +132,11 @@ func restageActions(appRepo *ApplicationRepo, appName string) []rewind.Action {
 		// delete
 		{
 			Forward: func() error {
-				return appRepo.DeleteApplication(venerableAppName(appName))
+				if !noDelete {
+					return appRepo.DeleteApplication(venerableAppName(appName))
+				} else {
+					return nil
+				}
 			},
 		},
 	}
@@ -152,8 +157,29 @@ func (plugin BgRestagePlugin) Run(cliConnection plugin.CliConnection, args []str
 	if len(args) < 2 {
 		fatalIf(fmt.Errorf("Usage: cf bg-restage application-to-restage"))
 	}
-	appName := args[1]
-	actionList := restageActions(appRepo, appName)
+	noDelete := false
+	instanceCount := -1
+	appName := ""
+	for i := 0; i < len(args); i++ {
+		switch(args[i]) {
+			case "--no-delete":
+				noDelete = true
+			case "-i", "--instances":
+				if i+1 > len(args) {
+					fatalIf(fmt.Errorf("Please provide a value for instances flag"))
+				} else if instanceCount, err = strconv.Atoi(args[i+1]); err != nil {
+					fatalIf(fmt.Errorf("Please provide an integer for instance count"))
+				} else if instanceCount < 0 {
+					fatalIf(fmt.Errorf("Please provide a non-negative integer for instance count"))
+				} else {
+					i++
+				}
+			default:
+				appName = args[i]
+		}
+	}
+
+	actionList := restageActions(appRepo, appName, instanceCount, noDelete)
 	actions := rewind.Actions{
 		Actions:              actionList,
 		RewindFailureMessage: "Oh no. Something's gone wrong. I've tried to roll back but you should check to see if everything is OK.",
@@ -229,8 +255,12 @@ func (repo *ApplicationRepo) RenameApplication(oldName, newName string) error {
 	return err
 }
 
-func (repo *ApplicationRepo) PushApplication(appName string) error {
+func (repo *ApplicationRepo) PushApplication(appName string, instanceCount int) error {
 	args := []string{"push", appName, "-f", repo.manifestFilePath(), "-p", repo.dir, "--no-start"}
+	if instanceCount >= 0 {
+		args = append(args, "-i")
+		args = append(args, strconv.Itoa(instanceCount))
+	}
 	_, err := repo.conn.CliCommand(args...)
 	return err
 }
